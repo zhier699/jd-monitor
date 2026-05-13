@@ -1,0 +1,80 @@
+name: 京东商品监控
+
+on:
+  schedule:
+    # ── 价格监控：每 5 分钟（UTC，GitHub Actions 最小粒度）
+    - cron: '*/5 * * * *'
+    # ── 国补日报：每天 01:00 UTC = 北京时间 09:00
+    - cron: '0 1 * * *'
+  workflow_dispatch:   # 支持手动触发（测试用）
+
+jobs:
+  # ════════════════════════════════════════════════════════
+  # Job 1: 价格监控（每 5 分钟）
+  # ════════════════════════════════════════════════════════
+  price-check:
+    name: 价格检测
+    runs-on: ubuntu-latest
+    # 只在 5 分钟 cron 或手动触发时运行（排除 01:00 的日报 cron）
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && !startsWith(github.event.schedule, '0 1'))
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install requests schedule
+
+      # 恢复上次价格缓存（保证重启不丢价格基准）
+      - name: 恢复价格缓存
+        uses: actions/cache@v4
+        with:
+          path: price_cache.json
+          key: price-cache-${{ github.run_number }}
+          restore-keys: price-cache-
+
+      - name: 运行价格检测
+        env:
+          # 在 GitHub 仓库 Settings → Secrets 中添加以下变量
+          PROJECTS_JSON: ${{ secrets.PROJECTS_JSON }}
+        run: python run_price_check.py
+
+      # 保存最新价格缓存供下次使用
+      - name: 保存价格缓存
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: price_cache.json
+          key: price-cache-${{ github.run_number }}
+
+  # ════════════════════════════════════════════════════════
+  # Job 2: 国补政策日报（每天 09:00 北京时间）
+  # ════════════════════════════════════════════════════════
+  daily-report:
+    name: 国补日报
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 1'))
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install requests
+
+      - name: 发送国补日报
+        env:
+          PROJECTS_JSON: ${{ secrets.PROJECTS_JSON }}
+        run: python run_daily_report.py
