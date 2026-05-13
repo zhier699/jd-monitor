@@ -72,7 +72,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: pip install requests
+        run: pip install requests schedule
 
       - name: 发送国补日报
         env:
