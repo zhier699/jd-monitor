@@ -101,28 +101,28 @@ class JDPriceFetcher:
 #   备用：返回空列表，日报降级为纯链接模式
 # ════════════════════════════════════════════════════════════
 class SubsidyFetcher:
+    # Bing 新闻 RSS：GitHub 服务器和国内均可访问，链接直指原始中文新闻
+    RSS_BASE = "https://www.bing.com/news/search?q={query}&format=rss&mkt=zh-CN&setlang=zh-CN&cc=CN"
 
-    RSS_BASE = "https://news.google.com/rss/search?hl=zh-CN&gl=CN&ceid=CN:zh-Hans&q={query}"
-
-    # 搜索关键词组合（分两次查，取并集，覆盖更广）
+    # 搜索关键词组合（分两次查，取并集）
     SEARCH_QUERIES = [
         "以旧换新 家电补贴",
         "国补政策 2025",
     ]
 
     def fetch_news(self) -> list[dict]:
-        """从 Google News RSS 抓取最新国补相关新闻，失败则返回空列表"""
+        """从 Bing 新闻 RSS 抓取最新国补相关新闻，失败则返回空列表"""
         all_items: list[dict] = []
-        cutoff = datetime.now() - timedelta(days=3)  # 只取3天内新闻
+        cutoff = datetime.now() - timedelta(days=7)  # 取7天内新闻（补贴政策变化不那么频繁）
 
         for q in self.SEARCH_QUERIES:
             url = self.RSS_BASE.format(query=quote(q))
             try:
                 items = self._parse_rss(url, cutoff)
                 all_items.extend(items)
-                log.info("Google News RSS [%s] 获取 %d 条", q, len(items))
+                log.info("Bing News RSS [%s] 获取 %d 条", q, len(items))
             except Exception as e:
-                log.warning("Google News RSS 失败 [%s]: %s", q, e)
+                log.warning("Bing News RSS 失败 [%s]: %s", q, e)
 
         # 去重（按标题）+ 按时间倒序 + 取前 6 条
         seen: set[str] = set()
@@ -135,25 +135,6 @@ class SubsidyFetcher:
 
         unique.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
         return unique[:6]
-
-    def _resolve_real_url(self, google_url: str) -> str:
-        """跟随 Google News 中转链接，返回真实文章 URL（国内可访问）"""
-        if not google_url or "news.google.com" not in google_url:
-            return google_url
-        try:
-            resp = requests.get(
-                google_url,
-                headers=config.REQUEST_HEADERS,
-                timeout=10,
-                allow_redirects=True,
-            )
-            final = resp.url
-            # 如果最终 URL 还在 google.com，返回原始链接兜底
-            if "google.com" in final:
-                return google_url
-            return final
-        except Exception:
-            return google_url
 
     def _parse_rss(self, url: str, cutoff: datetime) -> list[dict]:
         resp = http_get(url, timeout=15)
@@ -173,11 +154,11 @@ class SubsidyFetcher:
             pub_raw = (item.findtext("pubDate") or "").strip()
             source  = (item.findtext("source") or "").strip()
 
-            # Google News 标题格式：「标题 - 媒体名」，去掉后缀
+            # 标题格式：「标题 - 媒体名」，去掉后缀
             if " - " in title:
                 title = title.rsplit(" - ", 1)[0].strip()
 
-            # 关键词过滤
+            # 关键词过滤（宽松版，提高命中率）
             if not any(kw in title for kw in config.SUBSIDY_KEYWORDS):
                 continue
 
@@ -194,13 +175,10 @@ class SubsidyFetcher:
             if pub_time and pub_time < cutoff:
                 continue
 
-            # ── 关键修复：将 Google 中转链接解析为真实文章 URL ──
-            real_link = self._resolve_real_url(link)
-
             results.append({
-                "source":    source or "Google News",
+                "source":    source or "Bing News",
                 "title":     title,
-                "link":      real_link,
+                "link":      link,   # Bing 直接给原始文章 URL，无需跳转
                 "date":      pub_time.strftime("%m-%d %H:%M") if pub_time else "近期",
                 "timestamp": ts,
             })
