@@ -96,35 +96,30 @@ class JDPriceFetcher:
 
 # ════════════════════════════════════════════════════════════
 # 模块 2：国补政策抓取
-#   数据源：Google News RSS（免费、无需注册、实时收录新华网/21财经/财新等权威媒体）
-#   策略：多关键词查询 → 去重 → 按时间排序 → 最多返回 6 条
-#   备用：返回空列表，日报降级为纯链接模式
+#   数据源：36kr RSS（境外服务器和国内均可访问，链接直指国内新闻页面）
+#   日报消息固定包含百度新闻搜索直链，保证用户在国内能看到实时新闻
 # ════════════════════════════════════════════════════════════
 class SubsidyFetcher:
-    # Bing 新闻 RSS：GitHub 服务器和国内均可访问，链接直指原始中文新闻
-    RSS_BASE = "https://www.bing.com/news/search?q={query}&format=rss&mkt=zh-CN&setlang=zh-CN&cc=CN"
-
-    # 搜索关键词组合（分两次查，取并集）
-    SEARCH_QUERIES = [
-        "以旧换新 家电补贴",
-        "国补政策 2025",
+    # 36kr 综合 RSS（境外可访问，链接为 36kr.com，国内无需 VPN）
+    RSS_SOURCES = [
+        "https://36kr.com/feed",
+        "https://www.huxiu.com/rss/0.xml",
     ]
 
     def fetch_news(self) -> list[dict]:
-        """从 Bing 新闻 RSS 抓取最新国补相关新闻，失败则返回空列表"""
+        """从 36kr/虎嗅 RSS 中筛选国补相关文章，失败返回空列表"""
         all_items: list[dict] = []
-        cutoff = datetime.now() - timedelta(days=7)  # 取7天内新闻（补贴政策变化不那么频繁）
+        cutoff = datetime.now() - timedelta(days=7)
 
-        for q in self.SEARCH_QUERIES:
-            url = self.RSS_BASE.format(query=quote(q))
+        for rss_url in self.RSS_SOURCES:
             try:
-                items = self._parse_rss(url, cutoff)
+                items = self._parse_rss(rss_url, cutoff)
                 all_items.extend(items)
-                log.info("Bing News RSS [%s] 获取 %d 条", q, len(items))
+                log.info("RSS [%s] 获取国补相关 %d 条", rss_url, len(items))
             except Exception as e:
-                log.warning("Bing News RSS 失败 [%s]: %s", q, e)
+                log.warning("RSS 获取失败 [%s]: %s", rss_url, e)
 
-        # 去重（按标题）+ 按时间倒序 + 取前 6 条
+        # 去重（按标题前30字）+ 按时间倒序 + 取前 5 条
         seen: set[str] = set()
         unique: list[dict] = []
         for item in all_items:
@@ -134,31 +129,36 @@ class SubsidyFetcher:
                 unique.append(item)
 
         unique.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        return unique[:6]
+        return unique[:5]
 
     def _parse_rss(self, url: str, cutoff: datetime) -> list[dict]:
         resp = http_get(url, timeout=15)
         if not resp:
             return []
+
+        content = resp.content
+        # 剥离 BOM
+        if content.startswith(b"\xef\xbb\xbf"):
+            content = content[3:]
+
         try:
-            root = ET.fromstring(resp.content)
+            root = ET.fromstring(content)
         except ET.ParseError as e:
-            log.warning("RSS 解析失败: %s", e)
+            log.warning("RSS 解析失败 [%s]: %s", url, e)
             return []
 
         results = []
         for item in root.findall(".//item"):
-            title   = (item.findtext("title") or "").strip()
-            link    = (item.findtext("link")  or
-                       item.findtext("guid")  or "").strip()
+            # 处理 CDATA 标题
+            title_el = item.find("title")
+            title = ""
+            if title_el is not None:
+                title = (title_el.text or "").strip()
+
+            link    = (item.findtext("link") or item.findtext("guid") or "").strip()
             pub_raw = (item.findtext("pubDate") or "").strip()
-            source  = (item.findtext("source") or "").strip()
 
-            # 标题格式：「标题 - 媒体名」，去掉后缀
-            if " - " in title:
-                title = title.rsplit(" - ", 1)[0].strip()
-
-            # 关键词过滤（宽松版，提高命中率）
+            # 关键词过滤（匹配任意一个即可）
             if not any(kw in title for kw in config.SUBSIDY_KEYWORDS):
                 continue
 
@@ -176,9 +176,8 @@ class SubsidyFetcher:
                 continue
 
             results.append({
-                "source":    source or "Bing News",
                 "title":     title,
-                "link":      link,   # Bing 直接给原始文章 URL，无需跳转
+                "link":      link,
                 "date":      pub_time.strftime("%m-%d %H:%M") if pub_time else "近期",
                 "timestamp": ts,
             })
@@ -246,16 +245,24 @@ class FeishuBot:
     def notify_subsidy_daily(self, webhook: str, news_items: list[dict]):
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # 新闻部分
+        # ── 自动抓取到的新闻（有则展示，无则省略该块）──
+        news_block = ""
         if news_items:
             news_lines = "\n".join(
                 f"  [{n['date']}] {n['title']}\n  {n['link']}"
                 for n in news_items
             )
-        else:
-            news_lines = "  近 48 小时内暂无国补政策新动态"
+            news_block = f"📰 相关资讯（自动抓取）：\n{news_lines}\n\n"
 
-        # 各地区查询入口
+        # ── 百度新闻搜索直链（国内无需 VPN，实时最新）──
+        search_lines = (
+            "  🔍 以旧换新+家电补贴：\n"
+            "  https://news.baidu.com/s?word=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+%E5%AE%B6%E7%94%B5%E8%A1%A5%E8%B4%B4\n"
+            "  🔍 国补政策最新动态：\n"
+            "  https://news.baidu.com/s?word=%E5%9B%BD%E8%A1%A5%E6%94%BF%E7%AD%96+2025"
+        )
+
+        # ── 各地区官方查询入口 ──
         region_lines = "\n".join(
             f"  • {r['name']}：{r['query_url']}"
             for r in config.REGIONS
@@ -263,10 +270,10 @@ class FeishuBot:
 
         msg = (
             f"🔵 【国补政策日报】{today}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📡 数据来源：国务院 / 商务部 官方 RSS\n\n"
-            f"📰 最新政策动态：\n"
-            f"{news_lines}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{news_block}"
+            f"🔎 点击搜索今日最新国补资讯（国内直接可开）：\n"
+            f"{search_lines}\n\n"
             f"🏠 各地区补贴查询入口：\n"
             f"{region_lines}\n\n"
             f"💡 提示：以旧换新国补最高补贴 15%，上限 2000元/件\n"
