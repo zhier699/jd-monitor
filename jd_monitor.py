@@ -136,6 +136,25 @@ class SubsidyFetcher:
         unique.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
         return unique[:6]
 
+    def _resolve_real_url(self, google_url: str) -> str:
+        """跟随 Google News 中转链接，返回真实文章 URL（国内可访问）"""
+        if not google_url or "news.google.com" not in google_url:
+            return google_url
+        try:
+            resp = requests.get(
+                google_url,
+                headers=config.REQUEST_HEADERS,
+                timeout=10,
+                allow_redirects=True,
+            )
+            final = resp.url
+            # 如果最终 URL 还在 google.com，返回原始链接兜底
+            if "google.com" in final:
+                return google_url
+            return final
+        except Exception:
+            return google_url
+
     def _parse_rss(self, url: str, cutoff: datetime) -> list[dict]:
         resp = http_get(url, timeout=15)
         if not resp:
@@ -149,7 +168,8 @@ class SubsidyFetcher:
         results = []
         for item in root.findall(".//item"):
             title   = (item.findtext("title") or "").strip()
-            link    = (item.findtext("link")  or "").strip()
+            link    = (item.findtext("link")  or
+                       item.findtext("guid")  or "").strip()
             pub_raw = (item.findtext("pubDate") or "").strip()
             source  = (item.findtext("source") or "").strip()
 
@@ -174,10 +194,13 @@ class SubsidyFetcher:
             if pub_time and pub_time < cutoff:
                 continue
 
+            # ── 关键修复：将 Google 中转链接解析为真实文章 URL ──
+            real_link = self._resolve_real_url(link)
+
             results.append({
                 "source":    source or "Google News",
                 "title":     title,
-                "link":      link,
+                "link":      real_link,
                 "date":      pub_time.strftime("%m-%d %H:%M") if pub_time else "近期",
                 "timestamp": ts,
             })
