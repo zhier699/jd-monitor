@@ -1,0 +1,21 @@
+{
+  "projects": [
+    {
+      "name": "项目A",
+      "owner": "张三",
+      "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/42e6aba2-1774-4d30-8266-50051c47d729",
+      "skus": [
+        {"sku": "填写SKU编号", "name": "商品名称"},
+        {"sku": "填写SKU编号", "name": "商品名称"}
+      ]
+    },
+    {
+      "name": "项目B",
+      "owner": "李四",
+      "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/42e6aba2-1774-4d30-8266-50051c47d729",
+      "skus": [
+        {"sku": "填写SKU编号", "name": "商品名称"}
+      ]
+    }
+  ]
+}

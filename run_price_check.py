@@ -8,6 +8,7 @@ import os
 import sys
 import types
 import time
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,11 +16,17 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-# ── 从环境变量加载配置 ────────────────────────────────────────
+# ── 从环境变量 或 本地文件加载配置 ──────────────────────────────
 raw = os.environ.get("PROJECTS_JSON", "")
 if not raw:
-    print("❌ 未找到 PROJECTS_JSON 环境变量，请在 GitHub Secrets 中配置")
-    sys.exit(1)
+    # 本地运行时：从同目录下的 projects.json 读取
+    local_cfg = Path(__file__).parent / "projects.json"
+    if local_cfg.exists():
+        raw = local_cfg.read_text(encoding="utf-8")
+        print(f"📂 从本地文件加载配置：{local_cfg}")
+    else:
+        print("❌ 未找到 PROJECTS_JSON 环境变量或 projects.json 文件")
+        sys.exit(1)
 
 try:
     projects_data = json.loads(raw)
