@@ -42,50 +42,40 @@ PROJECTS = [
 # ────────────────────────────────────────────────────────────
 DAILY_REPORT_WEBHOOKS = [p["webhook"] for p in PROJECTS]
 
-# ── 京东各地区国补入口 ──────────────────────────────────────
-# jd_search : 该省在京东上搜索以旧换新的直达链接（稳定可访问）
-# official  : 该省官方政府补贴查询页（真实存在的 URL）
+# ── 京东各地区国补入口（全国31个省/直辖市/自治区）──────────────
+# news_search : 该省百度新闻搜索，点开看当地京东以旧换新最新政策动态
 REGIONS = [
-    {
-        "name": "北京",
-        "jd_search": "https://search.jd.com/Search?keyword=%E5%8C%97%E4%BA%AC+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "https://www.beijing.gov.cn/zhengce/zhengcefagui/",
-    },
-    {
-        "name": "上海",
-        "jd_search": "https://search.jd.com/Search?keyword=%E4%B8%8A%E6%B5%B7+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "https://www.shanghai.gov.cn/nw4411/index.html",
-    },
-    {
-        "name": "广东",
-        "jd_search": "https://search.jd.com/Search?keyword=%E5%B9%BF%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "http://commerce.gd.gov.cn/",
-    },
-    {
-        "name": "浙江",
-        "jd_search": "https://search.jd.com/Search?keyword=%E6%B5%99%E6%B1%9F+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "https://www.zj.gov.cn/col/col1229560015/index.html",
-    },
-    {
-        "name": "江苏",
-        "jd_search": "https://search.jd.com/Search?keyword=%E6%B1%9F%E8%8B%8F+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "http://commerce.jiangsu.gov.cn/",
-    },
-    {
-        "name": "四川",
-        "jd_search": "https://search.jd.com/Search?keyword=%E5%9B%9B%E5%B7%9D+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "https://www.sc.gov.cn/10462/c105960/list.shtml",
-    },
-    {
-        "name": "湖北",
-        "jd_search": "https://search.jd.com/Search?keyword=%E6%B9%96%E5%8C%97+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "http://swt.hubei.gov.cn/",
-    },
-    {
-        "name": "山东",
-        "jd_search": "https://search.jd.com/Search?keyword=%E5%B1%B1%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
-        "official":  "http://commerce.shandong.gov.cn/",
-    },
+    {"name": "北京",  "news_search": "https://www.baidu.com/s?wd=%E5%8C%97%E4%BA%AC+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "上海",  "news_search": "https://www.baidu.com/s?wd=%E4%B8%8A%E6%B5%B7+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "天津",  "news_search": "https://www.baidu.com/s?wd=%E5%A4%A9%E6%B4%A5+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "重庆",  "news_search": "https://www.baidu.com/s?wd=%E9%87%8D%E5%BA%86+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "广东",  "news_search": "https://www.baidu.com/s?wd=%E5%B9%BF%E4%B8%9C+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "浙江",  "news_search": "https://www.baidu.com/s?wd=%E6%B5%99%E6%B1%9F+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "江苏",  "news_search": "https://www.baidu.com/s?wd=%E6%B1%9F%E8%8B%8F+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "山东",  "news_search": "https://www.baidu.com/s?wd=%E5%B1%B1%E4%B8%9C+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "河南",  "news_search": "https://www.baidu.com/s?wd=%E6%B2%B3%E5%8D%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "河北",  "news_search": "https://www.baidu.com/s?wd=%E6%B2%B3%E5%8C%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "湖北",  "news_search": "https://www.baidu.com/s?wd=%E6%B9%96%E5%8C%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "湖南",  "news_search": "https://www.baidu.com/s?wd=%E6%B9%96%E5%8D%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "四川",  "news_search": "https://www.baidu.com/s?wd=%E5%9B%9B%E5%B7%9D+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "福建",  "news_search": "https://www.baidu.com/s?wd=%E7%A6%8F%E5%BB%BA+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "安徽",  "news_search": "https://www.baidu.com/s?wd=%E5%AE%89%E5%BE%BD+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "江西",  "news_search": "https://www.baidu.com/s?wd=%E6%B1%9F%E8%A5%BF+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "陕西",  "news_search": "https://www.baidu.com/s?wd=%E9%99%95%E8%A5%BF+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "辽宁",  "news_search": "https://www.baidu.com/s?wd=%E8%BE%BD%E5%AE%81+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "吉林",  "news_search": "https://www.baidu.com/s?wd=%E5%90%89%E6%9E%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "黑龙江", "news_search": "https://www.baidu.com/s?wd=%E9%BB%91%E9%BE%99%E6%B1%9F+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "山西",  "news_search": "https://www.baidu.com/s?wd=%E5%B1%B1%E8%A5%BF+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "贵州",  "news_search": "https://www.baidu.com/s?wd=%E8%B4%B5%E5%B7%9E+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "云南",  "news_search": "https://www.baidu.com/s?wd=%E4%BA%91%E5%8D%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "广西",  "news_search": "https://www.baidu.com/s?wd=%E5%B9%BF%E8%A5%BF+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "甘肃",  "news_search": "https://www.baidu.com/s?wd=%E7%94%98%E8%82%83+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "内蒙古", "news_search": "https://www.baidu.com/s?wd=%E5%86%85%E8%92%99%E5%8F%A4+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "海南",  "news_search": "https://www.baidu.com/s?wd=%E6%B5%B7%E5%8D%97+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "宁夏",  "news_search": "https://www.baidu.com/s?wd=%E5%AE%81%E5%A4%8F+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "新疆",  "news_search": "https://www.baidu.com/s?wd=%E6%96%B0%E7%96%86+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "青海",  "news_search": "https://www.baidu.com/s?wd=%E9%9D%92%E6%B5%B7+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
+    {"name": "西藏",  "news_search": "https://www.baidu.com/s?wd=%E8%A5%BF%E8%97%8F+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
 ]
 
 # 国补相关关键词（RSS 文章标题过滤用）

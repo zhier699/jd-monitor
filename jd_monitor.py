@@ -265,9 +265,9 @@ class FeishuBot:
             "  https://search.jd.com/Search?keyword=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0%E5%9B%BD%E8%A1%A5&enc=utf-8"
         )
 
-        # ── 各地区京东国补入口 ──
+        # ── 各地区京东国补政策新闻入口（百度新闻，国内直接打开）──
         region_lines = "\n".join(
-            f"  • {r['name']}：{r['jd_search']}"
+            f"  • {r['name']}：{r['news_search']}"
             for r in config.REGIONS
         )
 
