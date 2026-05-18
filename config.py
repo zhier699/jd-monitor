@@ -42,44 +42,54 @@ PROJECTS = [
 # ────────────────────────────────────────────────────────────
 DAILY_REPORT_WEBHOOKS = [p["webhook"] for p in PROJECTS]
 
-# 各地区官方国补政策入口（政府官网，稳定可访问）
-# 日报会把这些链接一并发出，方便点进去查最新补贴金额
+# ── 京东各地区国补入口 ──────────────────────────────────────
+# jd_search : 该省在京东上搜索以旧换新的直达链接（稳定可访问）
+# official  : 该省官方政府补贴查询页（真实存在的 URL）
 REGIONS = [
     {
         "name": "北京",
-        "url": "http://swj.beijing.gov.cn/zwgk/zcwj/",
-        "query_url": "https://bjsubsidy.mofcom.gov.cn/",   # 北京以旧换新查询
+        "jd_search": "https://search.jd.com/Search?keyword=%E5%8C%97%E4%BA%AC+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "https://www.beijing.gov.cn/zhengce/zhengcefagui/",
     },
     {
         "name": "上海",
-        "url": "http://sww.sh.gov.cn/shswzc/",
-        "query_url": "https://shsubsidy.mofcom.gov.cn/",
+        "jd_search": "https://search.jd.com/Search?keyword=%E4%B8%8A%E6%B5%B7+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "https://www.shanghai.gov.cn/nw4411/index.html",
     },
     {
         "name": "广东",
-        "url": "http://commerce.gd.gov.cn/gkmlpt/index",
-        "query_url": "https://gdsubsidy.mofcom.gov.cn/",
+        "jd_search": "https://search.jd.com/Search?keyword=%E5%B9%BF%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "http://commerce.gd.gov.cn/",
     },
     {
         "name": "浙江",
-        "url": "http://com.zj.gov.cn/col/col1229560014/",
-        "query_url": "https://zjsubsidy.mofcom.gov.cn/",
+        "jd_search": "https://search.jd.com/Search?keyword=%E6%B5%99%E6%B1%9F+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "https://www.zj.gov.cn/col/col1229560015/index.html",
     },
     {
         "name": "江苏",
-        "url": "http://commerce.jiangsu.gov.cn/col/col79408/",
-        "query_url": "https://jssubsidy.mofcom.gov.cn/",
+        "jd_search": "https://search.jd.com/Search?keyword=%E6%B1%9F%E8%8B%8F+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "http://commerce.jiangsu.gov.cn/",
     },
     {
         "name": "四川",
-        "url": "http://scsw.sc.gov.cn/scsw/zcwj/",
-        "query_url": "https://scsubsidy.mofcom.gov.cn/",
+        "jd_search": "https://search.jd.com/Search?keyword=%E5%9B%9B%E5%B7%9D+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "https://www.sc.gov.cn/10462/c105960/list.shtml",
+    },
+    {
+        "name": "湖北",
+        "jd_search": "https://search.jd.com/Search?keyword=%E6%B9%96%E5%8C%97+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "http://swt.hubei.gov.cn/",
+    },
+    {
+        "name": "山东",
+        "jd_search": "https://search.jd.com/Search?keyword=%E5%B1%B1%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0&enc=utf-8",
+        "official":  "http://commerce.shandong.gov.cn/",
     },
 ]
 
-# 国补相关关键词（文章标题包含这些词才纳入日报）
-# gov.cn / mofcom.gov.cn 已停止 RSS 服务，改为直接抓取文章列表页
-SUBSIDY_KEYWORDS = ["以旧换新", "家电补贴", "国家补贴", "惠民补贴", "新能源补贴", "消费补贴", "家电下乡", "国补"]
+# 国补相关关键词（RSS 文章标题过滤用）
+SUBSIDY_KEYWORDS = ["以旧换新", "家电补贴", "国家补贴", "惠民补贴", "消费补贴", "家电下乡", "国补", "京东补贴"]
 
 # ────────────────────────────────────────────────────────────
 # 监控频率

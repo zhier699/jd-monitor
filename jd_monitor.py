@@ -78,20 +78,32 @@ def http_get(url: str, params=None, extra_headers=None, timeout=15) -> requests.
 # ════════════════════════════════════════════════════════════
 class JDPriceFetcher:
     PRICE_API = "https://p.3.cn/prices/mgets"
+    BATCH_SIZE = 20  # 每次批量查询的 SKU 数量
+
+    def get_prices_batch(self, skus: list[str]) -> dict[str, float]:
+        """批量查询多个 SKU 的价格，返回 {sku: price} 字典"""
+        result = {}
+        for i in range(0, len(skus), self.BATCH_SIZE):
+            batch = skus[i: i + self.BATCH_SIZE]
+            ids = ",".join(f"J_{s}" for s in batch)
+            resp = http_get(self.PRICE_API, params={"skuIds": ids})
+            if not resp:
+                continue
+            try:
+                for item in resp.json():
+                    # id 字段是 "J_XXXXXX"
+                    raw_id = item.get("id", "").replace("J_", "")
+                    raw_p  = item.get("p") or item.get("op")
+                    if raw_id and raw_p:
+                        result[raw_id] = float(raw_p)
+            except Exception as e:
+                log.error("批量价格解析失败: %s", e)
+        return result
 
     def get_price(self, sku: str) -> float | None:
-        """返回当前京东到手价（单位：元）"""
-        resp = http_get(self.PRICE_API, params={"skuIds": f"J_{sku}"})
-        if not resp:
-            return None
-        try:
-            data = resp.json()
-            # p = 现价，op = 原价；优先取现价
-            raw = data[0].get("p") or data[0].get("op")
-            return float(raw) if raw else None
-        except Exception as e:
-            log.error("价格解析失败 SKU=%s: %s", sku, e)
-            return None
+        """单个 SKU 查询（兼容旧接口）"""
+        prices = self.get_prices_batch([sku])
+        return prices.get(sku)
 
 
 # ════════════════════════════════════════════════════════════
@@ -245,38 +257,46 @@ class FeishuBot:
     def notify_subsidy_daily(self, webhook: str, news_items: list[dict]):
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # ── 自动抓取到的新闻（有则展示，无则省略该块）──
+        # ── 京东平台以旧换新总入口 ──
+        jd_entry = (
+            "  🛒 京东以旧换新专区（直达）：\n"
+            "  https://pro.jd.com/mall/active/3GkqSdBcCBhXDLkJBBUPaXf3e6xd/index.html\n"
+            "  🔍 在京东搜「以旧换新国补」：\n"
+            "  https://search.jd.com/Search?keyword=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0%E5%9B%BD%E8%A1%A5&enc=utf-8"
+        )
+
+        # ── 各地区京东国补入口 ──
+        region_lines = "\n".join(
+            f"  • {r['name']}：{r['jd_search']}"
+            for r in config.REGIONS
+        )
+
+        # ── 今日最新京东国补资讯（百度新闻，国内直接打开）──
+        news_search = (
+            "  https://news.baidu.com/s?word=%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+%E5%9B%BD%E8%A1%A5+2025"
+        )
+
+        # ── 自动抓取的最新资讯（有则追加，最多3条）──
         news_block = ""
         if news_items:
             news_lines = "\n".join(
                 f"  [{n['date']}] {n['title']}\n  {n['link']}"
-                for n in news_items
+                for n in news_items[:3]
             )
-            news_block = f"📰 相关资讯（自动抓取）：\n{news_lines}\n\n"
-
-        # ── 百度新闻搜索直链（国内无需 VPN，实时最新）──
-        search_lines = (
-            "  🔍 以旧换新+家电补贴：\n"
-            "  https://news.baidu.com/s?word=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+%E5%AE%B6%E7%94%B5%E8%A1%A5%E8%B4%B4\n"
-            "  🔍 国补政策最新动态：\n"
-            "  https://news.baidu.com/s?word=%E5%9B%BD%E8%A1%A5%E6%94%BF%E7%AD%96+2025"
-        )
-
-        # ── 各地区官方查询入口 ──
-        region_lines = "\n".join(
-            f"  • {r['name']}：{r['query_url']}"
-            for r in config.REGIONS
-        )
+            news_block = f"\n📰 今日相关资讯（自动抓取）：\n{news_lines}\n"
 
         msg = (
-            f"🔵 【国补政策日报】{today}\n"
+            f"🔵 【京东国补日报】{today}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{news_block}"
-            f"🔎 点击搜索今日最新国补资讯（国内直接可开）：\n"
-            f"{search_lines}\n\n"
-            f"🏠 各地区补贴查询入口：\n"
-            f"{region_lines}\n\n"
-            f"💡 提示：以旧换新国补最高补贴 15%，上限 2000元/件\n"
+            f"💡 以旧换新国补：最高补贴 15%，上限 2000元/件\n"
+            f"    家电、手机、电脑均可享，旧机核销后自动抵扣\n\n"
+            f"🛒 京东平台入口：\n"
+            f"{jd_entry}\n\n"
+            f"📍 各地区京东国补查询：\n"
+            f"{region_lines}\n"
+            f"{news_block}\n"
+            f"🔍 今日最新国补资讯：\n"
+            f"{news_search}\n\n"
             f"@所有人"
         )
         self._send(webhook, msg)
