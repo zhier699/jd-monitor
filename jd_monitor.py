@@ -108,53 +108,46 @@ class JDPriceFetcher:
 
 # ════════════════════════════════════════════════════════════
 # 模块 2：京东国补活动抓取
-#   直接调用京东促销接口，查询监控 SKU 上挂载的国补/以旧换新活动
-#   无需依赖外部新闻网站，数据来自京东官方
+#   方式A（主力）：调用京东促销接口 cd.jd.com/promotion/v2
+#   方式B（兜底）：直接抓商品页面 item.jd.com/{sku}.html，提取国补标签
+#   两种方式都绕过代理直连，数据直接来自京东
 # ════════════════════════════════════════════════════════════
 class JDActivityFetcher:
     PROMO_API  = "https://cd.jd.com/promotion/v2"
-    # 国补相关关键词（用于在促销描述中识别国补信息）
+    ITEM_URL   = "https://item.jd.com/{sku}.html"
     SUBSIDY_KW = ["国补", "国家补贴", "以旧换新", "国家以旧换新", "政府补贴"]
-    # 抽查的地区 area 代码（国补为全国统一政策，查一个地区即可）
-    AREA       = "1_72_2799_0"   # 北京
+    AREA       = "1_72_2799_0"   # 北京（国补为全国统一政策）
 
+    # ── 对外接口 ──────────────────────────────────────────
     def fetch_brand_subsidy(self, projects: list) -> list[dict]:
-        """
-        遍历各品牌，取前几个 SKU 查询京东促销接口，
-        找到含国补信息的就记录，返回 [{brand, name, sku, rules}]
-        """
+        """每个品牌取前10个SKU逐一查询，找到国补活动即记录并停止"""
         results = []
         for project in projects:
             brand = project["name"]
-            found = False
-            # 每品牌最多查前 5 个 SKU，找到国补就停
-            for item in project["skus"][:5]:
-                sku  = item["sku"]
-                name = item["name"]
-                rules = self._query_promo(sku)
-                subsidy_rules = [r for r in rules if any(kw in r for kw in self.SUBSIDY_KW)]
-                if subsidy_rules:
-                    results.append({
-                        "brand": brand,
-                        "name":  name,
-                        "sku":   sku,
-                        "rules": subsidy_rules,
-                    })
-                    log.info("[%s] %s 有国补活动：%s", brand, name, subsidy_rules)
-                    found = True
+            found_item = None
+            for item in project["skus"][:10]:
+                sku, name = item["sku"], item["name"]
+                rules = self._get_subsidy_rules(sku)
+                if rules:
+                    found_item = {"brand": brand, "name": name, "sku": sku, "rules": rules}
+                    log.info("[%s] %s 查到国补：%s", brand, name, rules[0][:50])
                     break
-            if not found:
-                log.info("[%s] 前5个SKU均未查到国补活动", brand)
-                results.append({
-                    "brand": brand,
-                    "name":  "",
-                    "sku":   "",
-                    "rules": [],
-                })
+            if found_item:
+                results.append(found_item)
+            else:
+                log.info("[%s] 前10个SKU均未查到国补活动", brand)
+                results.append({"brand": brand, "name": "", "sku": "", "rules": []})
         return results
 
-    def _query_promo(self, sku: str) -> list[str]:
-        """查询单个 SKU 的京东促销信息，返回所有促销描述文本列表"""
+    # ── 方式A：促销接口 ────────────────────────────────────
+    def _get_subsidy_rules(self, sku: str) -> list[str]:
+        """先查促销API，拿不到再抓商品页面"""
+        rules = self._query_promo_api(sku)
+        if not rules:
+            rules = self._scrape_item_page(sku)
+        return rules
+
+    def _query_promo_api(self, sku: str) -> list[str]:
         resp = http_get(
             self.PROMO_API,
             params={"skuId": sku, "area": self.AREA, "cat": "1", "num": "1"},
@@ -163,29 +156,58 @@ class JDActivityFetcher:
         if not resp:
             return []
         try:
+            raw = resp.text
             data = resp.json()
             rules: list[str] = []
-            # 常见字段：promotions[].rule / skuCouponActInfoList[].desc
-            for promo in data.get("promotions", []):
-                for field in ("rule", "title", "content", "desc"):
-                    val = str(promo.get(field) or "").strip()
-                    if val and val not in rules:
-                        rules.append(val)
-            for act in data.get("skuCouponActInfoList", []):
-                for field in ("desc", "name", "title"):
-                    val = str(act.get(field) or "").strip()
-                    if val and val not in rules:
-                        rules.append(val)
-            # 如果结构未知但原始字符串中含关键词，兜底记录
-            raw = json.dumps(data, ensure_ascii=False)
-            if not rules and any(kw in raw for kw in self.SUBSIDY_KW):
-                # 用正则从 JSON 中提取含关键词的短句
-                snippets = re.findall(r'[^"]{0,10}(?:国补|以旧换新|国家补贴)[^"]{0,30}', raw)
+            # 遍历所有常见字段
+            def _dig(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if k in ("rule", "title", "content", "desc", "label",
+                                 "wording", "tips", "memo", "remark"):
+                            val = str(v or "").strip()
+                            if val and any(kw in val for kw in self.SUBSIDY_KW):
+                                rules.append(val)
+                        else:
+                            _dig(v)
+                elif isinstance(obj, list):
+                    for i in obj:
+                        _dig(i)
+            _dig(data)
+            # 兜底：原始文本匹配
+            if not rules:
+                snippets = re.findall(
+                    r'(?:国补|以旧换新|国家补贴)[^\n"<]{0,40}', raw
+                )
                 rules = list(dict.fromkeys(snippets))[:3]
-            log.debug("SKU %s 促销原始: %s", sku, raw[:300])
             return rules
         except Exception as e:
-            log.warning("SKU %s 促销解析失败: %s", sku, e)
+            log.warning("促销API解析失败 SKU=%s: %s", sku, e)
+            return []
+
+    # ── 方式B：抓商品页面 ──────────────────────────────────
+    def _scrape_item_page(self, sku: str) -> list[str]:
+        """抓取 item.jd.com/{sku}.html，从页面 HTML/JS 里找国补描述"""
+        resp = http_get(
+            self.ITEM_URL.format(sku=sku),
+            extra_headers={"Accept": "text/html,application/xhtml+xml"},
+            timeout=15,
+        )
+        if not resp:
+            return []
+        try:
+            html = resp.text
+            # 1. 从 JS 变量/JSON 中提取含国补关键词的短句
+            snippets = re.findall(
+                r'(?:国补|以旧换新|国家补贴|国家以旧换新)[^"\'<\n\r]{0,60}',
+                html,
+            )
+            rules = list(dict.fromkeys(s.strip() for s in snippets if len(s.strip()) > 4))
+            if rules:
+                log.info("商品页面 SKU=%s 找到国补信息 %d 条", sku, len(rules))
+            return rules[:5]
+        except Exception as e:
+            log.warning("商品页面抓取失败 SKU=%s: %s", sku, e)
             return []
 
 
