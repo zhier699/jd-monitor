@@ -111,50 +111,77 @@ class JDPriceFetcher:
 
 # ════════════════════════════════════════════════════════════
 # 模块 2：国补政策抓取
-#   数据源：36kr RSS（境外服务器和国内均可访问，链接直指国内新闻页面）
-#   日报消息固定包含百度新闻搜索直链，保证用户在国内能看到实时新闻
+#   主力：Bing 新闻 RSS（国内可访问，按关键词实时返回新闻，无需 VPN）
+#   兜底：36kr / 虎嗅 RSS
 # ════════════════════════════════════════════════════════════
 class SubsidyFetcher:
-    # 36kr 综合 RSS（境外可访问，链接为 36kr.com，国内无需 VPN）
-    RSS_SOURCES = [
+    # 主力：Bing中国版新闻 RSS（国内可访问，按关键词实时返回，无需 VPN）
+    BING_QUERIES = [
+        "京东 以旧换新 国补",
+        "京东 家电补贴 2025",
+        "以旧换新 补贴政策 2025",
+    ]
+    # 兜底：国内可访问的新闻 RSS（含关键词过滤）
+    FALLBACK_RSS = [
+        "https://rss.sina.com.cn/news/china/focus15.xml",          # 新浪新闻·中国焦点
+        "https://rss.sina.com.cn/roll/finance/gnyszqxw/index.xml", # 新浪财经
         "https://36kr.com/feed",
         "https://www.huxiu.com/rss/0.xml",
     ]
 
     def fetch_news(self) -> list[dict]:
-        """从 36kr/虎嗅 RSS 中筛选国补相关文章，失败返回空列表"""
         all_items: list[dict] = []
-        cutoff = datetime.now() - timedelta(days=7)
+        cutoff = datetime.now() - timedelta(days=3)
 
-        for rss_url in self.RSS_SOURCES:
+        # ── 主力：Bing 中国版新闻 RSS ────────────────────
+        for query in self.BING_QUERIES:
+            # cn.bing.com 是 Bing 国内版，在中国可正常访问
+            rss_url = (
+                "https://cn.bing.com/news/search"
+                f"?q={quote(query)}&format=RSS&mkt=zh-CN&setlang=zh-CN"
+            )
             try:
-                items = self._parse_rss(rss_url, cutoff)
+                items = self._parse_rss(rss_url, cutoff, keyword_filter=False)
                 all_items.extend(items)
-                log.info("RSS [%s] 获取国补相关 %d 条", rss_url, len(items))
+                log.info("Bing新闻 [%s] 获取 %d 条", query, len(items))
             except Exception as e:
-                log.warning("RSS 获取失败 [%s]: %s", rss_url, e)
+                log.warning("Bing新闻获取失败 [%s]: %s", query, e)
 
-        # 去重（按标题前30字）+ 按时间倒序 + 取前 5 条
+        # ── 兜底：新浪/36kr/虎嗅（关键词过滤）─────────────
+        if len(all_items) < 3:
+            for rss_url in self.FALLBACK_RSS:
+                try:
+                    items = self._parse_rss(rss_url, cutoff, keyword_filter=True)
+                    all_items.extend(items)
+                    log.info("RSS兜底 [%s] 获取 %d 条", rss_url, len(items))
+                except Exception as e:
+                    log.warning("RSS兜底失败 [%s]: %s", rss_url, e)
+
+        # 去重 + 按时间倒序 + 取前 6 条
         seen: set[str] = set()
         unique: list[dict] = []
         for item in all_items:
-            key = item["title"][:30]
+            key = item["title"][:25]
             if key not in seen:
                 seen.add(key)
                 unique.append(item)
 
         unique.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        return unique[:5]
+        result = unique[:6]
+        log.info("国补新闻最终汇总 %d 条", len(result))
+        return result
 
-    def _parse_rss(self, url: str, cutoff: datetime) -> list[dict]:
+    def _parse_rss(self, url: str, cutoff: datetime, keyword_filter: bool = True) -> list[dict]:
         resp = http_get(url, timeout=15)
         if not resp:
             return []
 
         content = resp.content
-        # 剥离 BOM
         if content.startswith(b"\xef\xbb\xbf"):
             content = content[3:]
+
+        # Bing RSS 有时带命名空间，先清理
+        content = re.sub(rb' xmlns[^"]*"[^"]*"', b"", content)
 
         try:
             root = ET.fromstring(content)
@@ -164,20 +191,18 @@ class SubsidyFetcher:
 
         results = []
         for item in root.findall(".//item"):
-            # 处理 CDATA 标题
             title_el = item.find("title")
-            title = ""
-            if title_el is not None:
-                title = (title_el.text or "").strip()
+            title = (title_el.text or "").strip() if title_el is not None else ""
+            if not title:
+                continue
 
             link    = (item.findtext("link") or item.findtext("guid") or "").strip()
             pub_raw = (item.findtext("pubDate") or "").strip()
 
-            # 关键词过滤（匹配任意一个即可）
-            if not any(kw in title for kw in config.SUBSIDY_KEYWORDS):
+            # 兜底源才做关键词过滤；Bing 已经按关键词搜索过了
+            if keyword_filter and not any(kw in title for kw in config.SUBSIDY_KEYWORDS):
                 continue
 
-            # 时间解析
             pub_time = None
             ts = 0
             if pub_raw:
@@ -261,46 +286,40 @@ class FeishuBot:
     def notify_subsidy_daily(self, webhook: str, news_items: list[dict]):
         today = datetime.now().strftime("%Y-%m-%d")
 
+        # ── 今日实时抓取新闻（放最前面，最重要）──────────
+        if news_items:
+            news_lines = "\n".join(
+                f"  [{n['date']}] {n['title']}\n  {n['link']}"
+                for n in news_items
+            )
+            news_block = f"📰 今日京东国补最新资讯：\n{news_lines}\n\n"
+        else:
+            news_block = (
+                "📰 今日资讯（点击查看）：\n"
+                "  https://news.baidu.com/s?word=%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+%E5%9B%BD%E8%A1%A5+2025\n\n"
+            )
+
         # ── 京东平台以旧换新总入口 ──
         jd_entry = (
-            "  🛒 京东以旧换新专区（直达）：\n"
-            "  https://pro.jd.com/mall/active/3GkqSdBcCBhXDLkJBBUPaXf3e6xd/index.html\n"
-            "  🔍 在京东搜「以旧换新国补」：\n"
+            "  🛒 京东以旧换新专区：\n"
             "  https://search.jd.com/Search?keyword=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0%E5%9B%BD%E8%A1%A5&enc=utf-8"
         )
 
-        # ── 各地区京东国补政策新闻入口（百度新闻，国内直接打开）──
+        # ── 各地区京东国补政策新闻入口 ──
         region_lines = "\n".join(
             f"  • {r['name']}：{r['news_search']}"
             for r in config.REGIONS
         )
 
-        # ── 今日最新京东国补资讯（百度新闻，国内直接打开）──
-        news_search = (
-            "  https://news.baidu.com/s?word=%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+%E5%9B%BD%E8%A1%A5+2025"
-        )
-
-        # ── 自动抓取的最新资讯（有则追加，最多3条）──
-        news_block = ""
-        if news_items:
-            news_lines = "\n".join(
-                f"  [{n['date']}] {n['title']}\n  {n['link']}"
-                for n in news_items[:3]
-            )
-            news_block = f"\n📰 今日相关资讯（自动抓取）：\n{news_lines}\n"
-
         msg = (
             f"🔵 【京东国补日报】{today}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💡 以旧换新国补：最高补贴 15%，上限 2000元/件\n"
-            f"    家电、手机、电脑均可享，旧机核销后自动抵扣\n\n"
+            f"💡 以旧换新国补：最高补贴 15%，上限 2000元/件\n\n"
+            f"{news_block}"
             f"🛒 京东平台入口：\n"
             f"{jd_entry}\n\n"
-            f"📍 各地区京东国补查询：\n"
-            f"{region_lines}\n"
-            f"{news_block}\n"
-            f"🔍 今日最新国补资讯：\n"
-            f"{news_search}\n\n"
+            f"📍 各地区查询（点开看当地政策）：\n"
+            f"{region_lines}\n\n"
             f"@所有人"
         )
         self._send(webhook, msg)
