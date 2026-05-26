@@ -9,11 +9,8 @@ import logging
 import re
 import threading
 import time
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 import schedule
@@ -110,119 +107,86 @@ class JDPriceFetcher:
 
 
 # ════════════════════════════════════════════════════════════
-# 模块 2：国补政策抓取
-#   主力：Bing 新闻 RSS（国内可访问，按关键词实时返回新闻，无需 VPN）
-#   兜底：36kr / 虎嗅 RSS
+# 模块 2：京东国补活动抓取
+#   直接调用京东促销接口，查询监控 SKU 上挂载的国补/以旧换新活动
+#   无需依赖外部新闻网站，数据来自京东官方
 # ════════════════════════════════════════════════════════════
-class SubsidyFetcher:
-    # 主力：Bing中国版新闻 RSS（国内可访问，按关键词实时返回，无需 VPN）
-    BING_QUERIES = [
-        "京东 以旧换新 国补",
-        "京东 家电补贴 2025",
-        "以旧换新 补贴政策 2025",
-    ]
-    # 兜底：国内可访问的新闻 RSS（含关键词过滤）
-    FALLBACK_RSS = [
-        "https://rss.sina.com.cn/news/china/focus15.xml",          # 新浪新闻·中国焦点
-        "https://rss.sina.com.cn/roll/finance/gnyszqxw/index.xml", # 新浪财经
-        "https://36kr.com/feed",
-        "https://www.huxiu.com/rss/0.xml",
-    ]
+class JDActivityFetcher:
+    PROMO_API  = "https://cd.jd.com/promotion/v2"
+    # 国补相关关键词（用于在促销描述中识别国补信息）
+    SUBSIDY_KW = ["国补", "国家补贴", "以旧换新", "国家以旧换新", "政府补贴"]
+    # 抽查的地区 area 代码（国补为全国统一政策，查一个地区即可）
+    AREA       = "1_72_2799_0"   # 北京
 
-    def fetch_news(self) -> list[dict]:
-        all_items: list[dict] = []
-        cutoff = datetime.now() - timedelta(days=3)
+    def fetch_brand_subsidy(self, projects: list) -> list[dict]:
+        """
+        遍历各品牌，取前几个 SKU 查询京东促销接口，
+        找到含国补信息的就记录，返回 [{brand, name, sku, rules}]
+        """
+        results = []
+        for project in projects:
+            brand = project["name"]
+            found = False
+            # 每品牌最多查前 5 个 SKU，找到国补就停
+            for item in project["skus"][:5]:
+                sku  = item["sku"]
+                name = item["name"]
+                rules = self._query_promo(sku)
+                subsidy_rules = [r for r in rules if any(kw in r for kw in self.SUBSIDY_KW)]
+                if subsidy_rules:
+                    results.append({
+                        "brand": brand,
+                        "name":  name,
+                        "sku":   sku,
+                        "rules": subsidy_rules,
+                    })
+                    log.info("[%s] %s 有国补活动：%s", brand, name, subsidy_rules)
+                    found = True
+                    break
+            if not found:
+                log.info("[%s] 前5个SKU均未查到国补活动", brand)
+                results.append({
+                    "brand": brand,
+                    "name":  "",
+                    "sku":   "",
+                    "rules": [],
+                })
+        return results
 
-        # ── 主力：Bing 中国版新闻 RSS ────────────────────
-        for query in self.BING_QUERIES:
-            # cn.bing.com 是 Bing 国内版，在中国可正常访问
-            rss_url = (
-                "https://cn.bing.com/news/search"
-                f"?q={quote(query)}&format=RSS&mkt=zh-CN&setlang=zh-CN"
-            )
-            try:
-                items = self._parse_rss(rss_url, cutoff, keyword_filter=False)
-                all_items.extend(items)
-                log.info("Bing新闻 [%s] 获取 %d 条", query, len(items))
-            except Exception as e:
-                log.warning("Bing新闻获取失败 [%s]: %s", query, e)
-
-        # ── 兜底：新浪/36kr/虎嗅（关键词过滤）─────────────
-        if len(all_items) < 3:
-            for rss_url in self.FALLBACK_RSS:
-                try:
-                    items = self._parse_rss(rss_url, cutoff, keyword_filter=True)
-                    all_items.extend(items)
-                    log.info("RSS兜底 [%s] 获取 %d 条", rss_url, len(items))
-                except Exception as e:
-                    log.warning("RSS兜底失败 [%s]: %s", rss_url, e)
-
-        # 去重 + 按时间倒序 + 取前 6 条
-        seen: set[str] = set()
-        unique: list[dict] = []
-        for item in all_items:
-            key = item["title"][:25]
-            if key not in seen:
-                seen.add(key)
-                unique.append(item)
-
-        unique.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        result = unique[:6]
-        log.info("国补新闻最终汇总 %d 条", len(result))
-        return result
-
-    def _parse_rss(self, url: str, cutoff: datetime, keyword_filter: bool = True) -> list[dict]:
-        resp = http_get(url, timeout=15)
+    def _query_promo(self, sku: str) -> list[str]:
+        """查询单个 SKU 的京东促销信息，返回所有促销描述文本列表"""
+        resp = http_get(
+            self.PROMO_API,
+            params={"skuId": sku, "area": self.AREA, "cat": "1", "num": "1"},
+            timeout=10,
+        )
         if not resp:
             return []
-
-        content = resp.content
-        if content.startswith(b"\xef\xbb\xbf"):
-            content = content[3:]
-
-        # Bing RSS 有时带命名空间，先清理
-        content = re.sub(rb' xmlns[^"]*"[^"]*"', b"", content)
-
         try:
-            root = ET.fromstring(content)
-        except ET.ParseError as e:
-            log.warning("RSS 解析失败 [%s]: %s", url, e)
+            data = resp.json()
+            rules: list[str] = []
+            # 常见字段：promotions[].rule / skuCouponActInfoList[].desc
+            for promo in data.get("promotions", []):
+                for field in ("rule", "title", "content", "desc"):
+                    val = str(promo.get(field) or "").strip()
+                    if val and val not in rules:
+                        rules.append(val)
+            for act in data.get("skuCouponActInfoList", []):
+                for field in ("desc", "name", "title"):
+                    val = str(act.get(field) or "").strip()
+                    if val and val not in rules:
+                        rules.append(val)
+            # 如果结构未知但原始字符串中含关键词，兜底记录
+            raw = json.dumps(data, ensure_ascii=False)
+            if not rules and any(kw in raw for kw in self.SUBSIDY_KW):
+                # 用正则从 JSON 中提取含关键词的短句
+                snippets = re.findall(r'[^"]{0,10}(?:国补|以旧换新|国家补贴)[^"]{0,30}', raw)
+                rules = list(dict.fromkeys(snippets))[:3]
+            log.debug("SKU %s 促销原始: %s", sku, raw[:300])
+            return rules
+        except Exception as e:
+            log.warning("SKU %s 促销解析失败: %s", sku, e)
             return []
-
-        results = []
-        for item in root.findall(".//item"):
-            title_el = item.find("title")
-            title = (title_el.text or "").strip() if title_el is not None else ""
-            if not title:
-                continue
-
-            link    = (item.findtext("link") or item.findtext("guid") or "").strip()
-            pub_raw = (item.findtext("pubDate") or "").strip()
-
-            # 兜底源才做关键词过滤；Bing 已经按关键词搜索过了
-            if keyword_filter and not any(kw in title for kw in config.SUBSIDY_KEYWORDS):
-                continue
-
-            pub_time = None
-            ts = 0
-            if pub_raw:
-                try:
-                    pub_time = parsedate_to_datetime(pub_raw).replace(tzinfo=None)
-                    ts = pub_time.timestamp()
-                except Exception:
-                    pass
-
-            if pub_time and pub_time < cutoff:
-                continue
-
-            results.append({
-                "title":     title,
-                "link":      link,
-                "date":      pub_time.strftime("%m-%d %H:%M") if pub_time else "近期",
-                "timestamp": ts,
-            })
-
-        return results
 
 
 # ════════════════════════════════════════════════════════════
@@ -283,42 +247,47 @@ class FeishuBot:
         self._send(webhook, msg)
 
     # ── 国补日报 ──────────────────────────────────────────
-    def notify_subsidy_daily(self, webhook: str, news_items: list[dict]):
+    def notify_subsidy_daily(self, webhook: str, brand_data: list[dict]):
+        """
+        brand_data: JDActivityFetcher.fetch_brand_subsidy() 返回值
+        [{brand, name, sku, rules}]
+        """
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # ── 今日实时抓取新闻（放最前面，最重要）──────────
-        if news_items:
-            news_lines = "\n".join(
-                f"  [{n['date']}] {n['title']}\n  {n['link']}"
-                for n in news_items
-            )
-            news_block = f"📰 今日京东国补最新资讯：\n{news_lines}\n\n"
-        else:
-            news_block = (
-                "📰 今日资讯（点击查看）：\n"
-                "  https://news.baidu.com/s?word=%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+%E5%9B%BD%E8%A1%A5+2025\n\n"
-            )
+        # ── 各品牌国补活动汇总 ────────────────────────────
+        brand_lines = []
+        has_subsidy = False
+        for item in brand_data:
+            brand = item["brand"]
+            if item["rules"]:
+                has_subsidy = True
+                brand_lines.append(f"  ✅ {brand}（{item['name']}）")
+                for r in item["rules"][:3]:
+                    brand_lines.append(f"     → {r}")
+                brand_lines.append(f"     🔗 https://item.jd.com/{item['sku']}.html")
+            else:
+                brand_lines.append(f"  ⚪ {brand}：当前未查到国补活动")
 
-        # ── 京东平台以旧换新总入口 ──
-        jd_entry = (
-            "  🛒 京东以旧换新专区：\n"
-            "  https://search.jd.com/Search?keyword=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0%E5%9B%BD%E8%A1%A5&enc=utf-8"
-        )
+        subsidy_block = "\n".join(brand_lines)
 
-        # ── 各地区京东国补政策新闻入口 ──
+        # ── 各地区查询入口 ────────────────────────────────
         region_lines = "\n".join(
             f"  • {r['name']}：{r['news_search']}"
             for r in config.REGIONS
         )
 
+        status = "📢 今日有品牌享有国补，详见下方" if has_subsidy else "📢 今日所监控商品暂未查到国补活动"
+
         msg = (
             f"🔵 【京东国补日报】{today}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💡 以旧换新国补：最高补贴 15%，上限 2000元/件\n\n"
-            f"{news_block}"
-            f"🛒 京东平台入口：\n"
-            f"{jd_entry}\n\n"
-            f"📍 各地区查询（点开看当地政策）：\n"
+            f"💡 以旧换新国补：最高补贴 15%，上限 2000元/件\n"
+            f"{status}\n\n"
+            f"🏷️ 监控品牌国补状态（直接从京东抓取）：\n"
+            f"{subsidy_block}\n\n"
+            f"🛒 京东以旧换新专区：\n"
+            f"  https://search.jd.com/Search?keyword=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0%E5%9B%BD%E8%A1%A5&enc=utf-8\n\n"
+            f"📍 各地区国补政策查询：\n"
             f"{region_lines}\n\n"
             f"@所有人"
         )
@@ -328,10 +297,10 @@ class FeishuBot:
 # ════════════════════════════════════════════════════════════
 # 模块 4：定时任务
 # ════════════════════════════════════════════════════════════
-cache   = PriceCache()
-jd      = JDPriceFetcher()
-bot     = FeishuBot()
-subsidy = SubsidyFetcher()
+cache      = PriceCache()
+jd         = JDPriceFetcher()
+bot        = FeishuBot()
+jd_activity = JDActivityFetcher()
 
 # 用锁防止价格任务执行时间过长导致任务堆叠
 _price_lock = threading.Lock()
@@ -380,12 +349,12 @@ def job_check_prices():
 
 
 def job_subsidy_daily():
-    """每天 09:00：抓取国补新闻，生成日报发到所有群"""
+    """每天 09:00：直接从京东抓取各品牌国补活动，发日报到所有群"""
     log.info("=== 发送国补日报 ===")
-    news = subsidy.fetch_news()
-    log.info("共获取 %d 条国补新闻", len(news))
+    brand_data = jd_activity.fetch_brand_subsidy(config.PROJECTS)
+    log.info("国补活动抓取完成，共 %d 个品牌", len(brand_data))
     for webhook in config.DAILY_REPORT_WEBHOOKS:
-        bot.notify_subsidy_daily(webhook, news)
+        bot.notify_subsidy_daily(webhook, brand_data)
 
 
 # ════════════════════════════════════════════════════════════

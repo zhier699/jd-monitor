@@ -57,30 +57,33 @@ cfg.REGIONS = [
     {"name": "青海",  "news_search": "https://www.baidu.com/s?wd=%E9%9D%92%E6%B5%B7+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
     {"name": "西藏",  "news_search": "https://www.baidu.com/s?wd=%E8%A5%BF%E8%97%8F+%E4%BA%AC%E4%B8%9C+%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0+2025"},
 ]
-cfg.SUBSIDY_KEYWORDS = ["以旧换新", "家电补贴", "国家补贴", "惠民补贴", "消费补贴", "家电下乡", "国补", "京东补贴"]
-cfg.PRICE_INTERVAL_MIN     = 5
-cfg.DAILY_REPORT_HOUR      = 9
-cfg.RETRY_TIMES            = 3
-cfg.RETRY_DELAY            = 5
-cfg.REQUEST_HEADERS        = {
+cfg.PRICE_INTERVAL_MIN = 5
+cfg.DAILY_REPORT_HOUR  = 9
+cfg.RETRY_TIMES        = 3
+cfg.RETRY_DELAY        = 5
+cfg.REQUEST_HEADERS    = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept-Language": "zh-CN,zh;q=0.9",
 }
 sys.modules["config"] = cfg
 
-from jd_monitor import SubsidyFetcher, FeishuBot
+from jd_monitor import JDActivityFetcher, FeishuBot
 
 bot     = FeishuBot()
-fetcher = SubsidyFetcher()
+fetcher = JDActivityFetcher()
 
-print("正在抓取国补新闻（Google News RSS）...")
-news = fetcher.fetch_news()
-print(f"获取到 {len(news)} 条相关新闻")
-for n in news:
-    print(f"  [{n['date']}] {n['title'][:50]}")
+print(f"正在从京东抓取各品牌国补活动（共 {len(cfg.PROJECTS)} 个品牌）...")
+brand_data = fetcher.fetch_brand_subsidy(cfg.PROJECTS)
+for item in brand_data:
+    status = f"有国补：{item['rules'][0][:40]}" if item["rules"] else "未查到国补活动"
+    print(f"  [{item['brand']}] {status}")
 
 print("发送日报...")
+# 去重 webhook（多品牌可能同一个群）
+seen_hooks = set()
 for webhook in cfg.DAILY_REPORT_WEBHOOKS:
-    bot.notify_subsidy_daily(webhook, news)
+    if webhook not in seen_hooks:
+        seen_hooks.add(webhook)
+        bot.notify_subsidy_daily(webhook, brand_data)
 
 print("国补日报发送完成")
