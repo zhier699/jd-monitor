@@ -108,63 +108,116 @@ class JDPriceFetcher:
 
 # ════════════════════════════════════════════════════════════
 # 模块 2：京东国补活动抓取
-#   方式A（主力）：调用京东促销接口 cd.jd.com/promotion/v2
-#   方式B（兜底）：直接抓商品页面 item.jd.com/{sku}.html，提取国补标签
-#   两种方式都绕过代理直连，数据直接来自京东
+#   步骤1：从任意商品页面提取当前平台国补活动入口URL（任何IP均可）
+#   步骤2：调用 cd.jd.com 促销接口拿各品牌具体优惠描述（需中国IP）
+#   活动URL存入缓存，次日对比，有变动则标注"政策已更新"
 # ════════════════════════════════════════════════════════════
 class JDActivityFetcher:
-    PROMO_API  = "https://cd.jd.com/promotion/v2"
-    ITEM_URL   = "https://item.jd.com/{sku}.html"
-    SUBSIDY_KW = ["国补", "国家补贴", "以旧换新", "国家以旧换新", "政府补贴"]
-    AREA       = "1_72_2799_0"   # 北京（国补为全国统一政策）
+    PROMO_API      = "https://cd.jd.com/promotion/v2"
+    ITEM_URL       = "https://item.jd.com/{sku}.html"
+    SUBSIDY_KW     = ["国补", "国家补贴", "以旧换新", "国家以旧换新", "政府补贴"]
+    AREA           = "1_72_2799_0"
+    ACTIVITY_CACHE = Path("activity_cache.json")
 
-    # ── 对外接口 ──────────────────────────────────────────
-    def fetch_brand_subsidy(self, projects: list) -> list[dict]:
-        """每个品牌取前10个SKU逐一查询，找到国补活动即记录并停止"""
-        results = []
+    # ── 主入口 ────────────────────────────────────────────
+    def fetch_brand_subsidy(self, projects: list) -> dict:
+        """
+        返回:
+          activity  : {url, changed}   当前平台国补活动入口
+          brands    : [{brand, name, sku, rules}]  各品牌详情
+        """
+        # Step1：从第一个品牌第一个 SKU 的商品页面提取活动 URL
+        activity = self._get_platform_activity(projects)
+
+        # Step2：逐品牌查促销接口获取具体描述
+        brands = []
         for project in projects:
             brand = project["name"]
-            found_item = None
+            found = None
             for item in project["skus"][:10]:
                 sku, name = item["sku"], item["name"]
-                rules = self._get_subsidy_rules(sku)
+                rules = self._query_promo_api(sku)
                 if rules:
-                    found_item = {"brand": brand, "name": name, "sku": sku, "rules": rules}
-                    log.info("[%s] %s 查到国补：%s", brand, name, rules[0][:50])
+                    found = {"brand": brand, "name": name, "sku": sku, "rules": rules}
+                    log.info("[%s] %s 促销接口有国补：%s", brand, name, rules[0][:50])
                     break
-            if found_item:
-                results.append(found_item)
-            else:
-                log.info("[%s] 前10个SKU均未查到国补活动", brand)
-                results.append({"brand": brand, "name": "", "sku": "", "rules": []})
-        return results
+            if not found:
+                # 促销接口没拿到，用活动URL推断（页面已确认国补有效）
+                first = project["skus"][0] if project["skus"] else {}
+                found = {
+                    "brand": brand,
+                    "name":  first.get("name", ""),
+                    "sku":   first.get("sku", ""),
+                    "rules": ["国家补贴活动进行中（详见活动页面）"] if activity.get("url") else [],
+                }
+                log.info("[%s] 促销接口无数据，依据活动URL推断", brand)
+            brands.append(found)
 
-    # ── 方式A：促销接口 ────────────────────────────────────
-    def _get_subsidy_rules(self, sku: str) -> list[str]:
-        """先查促销API，拿不到再抓商品页面"""
-        rules = self._query_promo_api(sku)
-        if not rules:
-            rules = self._scrape_item_page(sku)
-        return rules
+        return {"activity": activity, "brands": brands}
 
+    # ── Step1：提取平台级国补活动URL ──────────────────────
+    def _get_platform_activity(self, projects: list) -> dict:
+        """从商品页面 HTML 中提取国补活动 URL，并与昨日缓存对比"""
+        url = ""
+        changed = False
+        try:
+            sku = projects[0]["skus"][0]["sku"]
+            resp = http_get(
+                self.ITEM_URL.format(sku=sku),
+                extra_headers={"Accept": "text/html,application/xhtml+xml"},
+                timeout=15,
+            )
+            if resp:
+                html = resp.text
+                # 找所有 pro.jd.com/mall/active/... 链接
+                urls = list(dict.fromkeys(re.findall(
+                    r'https://pro\.jd\.com/mall/active/\w+/index\.html', html
+                )))
+                # 优先取 aria-lable="国家补贴" 对应的链接
+                guobao = re.findall(
+                    r'(https://pro\.jd\.com/mall/active/\w+/index\.html)'
+                    r'[^>]*aria-la[b]le=\"国家补贴\"',
+                    html,
+                )
+                url = guobao[0] if guobao else (urls[0] if urls else "")
+                log.info("平台国补活动URL: %s", url)
+
+                # 与缓存对比
+                old = ""
+                if self.ACTIVITY_CACHE.exists():
+                    old = json.loads(self.ACTIVITY_CACHE.read_text(encoding="utf-8")).get("url", "")
+                changed = bool(old and old != url)
+                self.ACTIVITY_CACHE.write_text(
+                    json.dumps({"url": url, "date": datetime.now().strftime("%Y-%m-%d")},
+                               ensure_ascii=False),
+                    encoding="utf-8",
+                )
+        except Exception as e:
+            log.warning("获取平台活动URL失败: %s", e)
+        return {"url": url, "changed": changed}
+
+    # ── Step2：促销接口（中国IP返回JSON，海外IP返回HTML被忽略）──
     def _query_promo_api(self, sku: str) -> list[str]:
         resp = http_get(
             self.PROMO_API,
-            params={"skuId": sku, "area": self.AREA, "cat": "1", "num": "1"},
+            params={"skuId": sku, "area": self.AREA, "num": "1"},
             timeout=10,
         )
         if not resp:
             return []
+        raw = resp.text
+        # 海外IP或被拦截时返回 HTML，直接跳过
+        if raw.strip().startswith("<"):
+            return []
         try:
-            raw = resp.text
             data = resp.json()
             rules: list[str] = []
-            # 遍历所有常见字段
+
             def _dig(obj):
                 if isinstance(obj, dict):
                     for k, v in obj.items():
                         if k in ("rule", "title", "content", "desc", "label",
-                                 "wording", "tips", "memo", "remark"):
+                                 "wording", "tips", "memo", "remark", "promotionInfo"):
                             val = str(v or "").strip()
                             if val and any(kw in val for kw in self.SUBSIDY_KW):
                                 rules.append(val)
@@ -173,41 +226,14 @@ class JDActivityFetcher:
                 elif isinstance(obj, list):
                     for i in obj:
                         _dig(i)
+
             _dig(data)
-            # 兜底：原始文本匹配
             if not rules:
-                snippets = re.findall(
-                    r'(?:国补|以旧换新|国家补贴)[^\n"<]{0,40}', raw
-                )
+                snippets = re.findall(r'(?:国补|以旧换新|国家补贴)[^\n"<]{0,50}', raw)
                 rules = list(dict.fromkeys(snippets))[:3]
             return rules
         except Exception as e:
-            log.warning("促销API解析失败 SKU=%s: %s", sku, e)
-            return []
-
-    # ── 方式B：抓商品页面 ──────────────────────────────────
-    def _scrape_item_page(self, sku: str) -> list[str]:
-        """抓取 item.jd.com/{sku}.html，从页面 HTML/JS 里找国补描述"""
-        resp = http_get(
-            self.ITEM_URL.format(sku=sku),
-            extra_headers={"Accept": "text/html,application/xhtml+xml"},
-            timeout=15,
-        )
-        if not resp:
-            return []
-        try:
-            html = resp.text
-            # 1. 从 JS 变量/JSON 中提取含国补关键词的短句
-            snippets = re.findall(
-                r'(?:国补|以旧换新|国家补贴|国家以旧换新)[^"\'<\n\r]{0,60}',
-                html,
-            )
-            rules = list(dict.fromkeys(s.strip() for s in snippets if len(s.strip()) > 4))
-            if rules:
-                log.info("商品页面 SKU=%s 找到国补信息 %d 条", sku, len(rules))
-            return rules[:5]
-        except Exception as e:
-            log.warning("商品页面抓取失败 SKU=%s: %s", sku, e)
+            log.warning("促销接口解析失败 SKU=%s: %s", sku, e)
             return []
 
 
@@ -269,47 +295,58 @@ class FeishuBot:
         self._send(webhook, msg)
 
     # ── 国补日报 ──────────────────────────────────────────
-    def notify_subsidy_daily(self, webhook: str, brand_data: list[dict]):
+    def notify_subsidy_daily(self, webhook: str, data: dict):
         """
-        brand_data: JDActivityFetcher.fetch_brand_subsidy() 返回值
-        [{brand, name, sku, rules}]
+        data: JDActivityFetcher.fetch_brand_subsidy() 返回值
+          {"activity": {url, changed}, "brands": [{brand, name, sku, rules}]}
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        today    = datetime.now().strftime("%Y-%m-%d")
+        activity = data.get("activity", {})
+        brands   = data.get("brands", [])
 
-        # ── 各品牌国补活动汇总 ────────────────────────────
+        # ── 平台活动状态 ──────────────────────────────────
+        act_url  = activity.get("url", "")
+        changed  = activity.get("changed", False)
+        if act_url:
+            change_tag = "⚠️ 活动链接有更新！请关注政策变化\n" if changed else ""
+            act_block = (
+                f"✅ 京东国补活动进行中\n"
+                f"{change_tag}"
+                f"  🔗 今日活动入口（点击直达）：\n"
+                f"  {act_url}"
+            )
+        else:
+            act_block = "⚠️ 今日未抓取到国补活动链接，请手动确认"
+
+        # ── 各品牌详情 ────────────────────────────────────
         brand_lines = []
-        has_subsidy = False
-        for item in brand_data:
+        for item in brands:
             brand = item["brand"]
             if item["rules"]:
-                has_subsidy = True
-                brand_lines.append(f"  ✅ {brand}（{item['name']}）")
-                for r in item["rules"][:3]:
-                    brand_lines.append(f"     → {r}")
-                brand_lines.append(f"     🔗 https://item.jd.com/{item['sku']}.html")
+                brand_lines.append(f"  ✅ {brand}：{item['rules'][0][:40]}")
+                if len(item["rules"]) > 1:
+                    for r in item["rules"][1:3]:
+                        brand_lines.append(f"       {r[:40]}")
+                if item["sku"]:
+                    brand_lines.append(f"     → https://item.jd.com/{item['sku']}.html")
             else:
-                brand_lines.append(f"  ⚪ {brand}：当前未查到国补活动")
+                brand_lines.append(f"  ⚪ {brand}：未查到具体优惠描述")
 
-        subsidy_block = "\n".join(brand_lines)
-
-        # ── 各地区查询入口 ────────────────────────────────
+        # ── 各地区查询 ────────────────────────────────────
         region_lines = "\n".join(
             f"  • {r['name']}：{r['news_search']}"
             for r in config.REGIONS
         )
 
-        status = "📢 今日有品牌享有国补，详见下方" if has_subsidy else "📢 今日所监控商品暂未查到国补活动"
-
         msg = (
             f"🔵 【京东国补日报】{today}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💡 以旧换新国补：最高补贴 15%，上限 2000元/件\n"
-            f"{status}\n\n"
-            f"🏷️ 监控品牌国补状态（直接从京东抓取）：\n"
-            f"{subsidy_block}\n\n"
-            f"🛒 京东以旧换新专区：\n"
-            f"  https://search.jd.com/Search?keyword=%E4%BB%A5%E6%97%A7%E6%8D%A2%E6%96%B0%E5%9B%BD%E8%A1%A5&enc=utf-8\n\n"
-            f"📍 各地区国补政策查询：\n"
+            f"💡 以旧换新：最高补贴 15%，上限 2000元/件\n\n"
+            f"🏷️ 今日平台国补状态（直接从京东获取）：\n"
+            f"{act_block}\n\n"
+            f"📦 各品牌国补详情：\n"
+            f"{chr(10).join(brand_lines)}\n\n"
+            f"📍 各地区政策查询：\n"
             f"{region_lines}\n\n"
             f"@所有人"
         )

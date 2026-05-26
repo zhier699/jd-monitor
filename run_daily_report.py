@@ -72,18 +72,20 @@ from jd_monitor import JDActivityFetcher, FeishuBot
 bot     = FeishuBot()
 fetcher = JDActivityFetcher()
 
-print(f"正在从京东抓取各品牌国补活动（共 {len(cfg.PROJECTS)} 个品牌）...")
-brand_data = fetcher.fetch_brand_subsidy(cfg.PROJECTS)
-for item in brand_data:
-    status = f"有国补：{item['rules'][0][:40]}" if item["rules"] else "未查到国补活动"
+print(f"正在从京东抓取国补活动（共 {len(cfg.PROJECTS)} 个品牌）...")
+result = fetcher.fetch_brand_subsidy(cfg.PROJECTS)
+
+act = result.get("activity", {})
+print(f"平台活动URL: {act.get('url', '未获取到')}  变化: {act.get('changed', False)}")
+for item in result.get("brands", []):
+    status = item["rules"][0][:40] if item["rules"] else "未查到具体描述"
     print(f"  [{item['brand']}] {status}")
 
 print("发送日报...")
-# 去重 webhook（多品牌可能同一个群）
 seen_hooks = set()
 for webhook in cfg.DAILY_REPORT_WEBHOOKS:
     if webhook not in seen_hooks:
         seen_hooks.add(webhook)
-        bot.notify_subsidy_daily(webhook, brand_data)
+        bot.notify_subsidy_daily(webhook, result)
 
 print("国补日报发送完成")
