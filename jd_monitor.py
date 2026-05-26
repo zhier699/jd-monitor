@@ -60,9 +60,12 @@ class PriceCache:
 # ── HTTP 工具（带重试）──────────────────────────────────────
 def http_get(url: str, params=None, extra_headers=None, timeout=15) -> requests.Response | None:
     headers = {**config.REQUEST_HEADERS, **(extra_headers or {})}
+    # 强制直连，绕过 VPN/系统代理（避免 VPN 开启时 JD 接口被代理到境外 IP 导致失败）
+    NO_PROXY = {"http": None, "https": None}
     for attempt in range(1, config.RETRY_TIMES + 1):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            resp = requests.get(url, params=params, headers=headers,
+                                timeout=timeout, proxies=NO_PROXY)
             resp.raise_for_status()
             return resp
         except Exception as e:
@@ -205,9 +208,10 @@ class FeishuBot:
 
     def _send(self, webhook: str, text: str) -> bool:
         body = {"msg_type": "text", "content": {"text": text}}
+        NO_PROXY = {"http": None, "https": None}
         for attempt in range(1, config.RETRY_TIMES + 1):
             try:
-                resp = requests.post(webhook, json=body, timeout=10)
+                resp = requests.post(webhook, json=body, timeout=10, proxies=NO_PROXY)
                 data = resp.json()
                 # 飞书自定义机器人 Webhook 成功时返回 {"code": 0, "msg": "success"}
                 if data.get("code") == 0:
