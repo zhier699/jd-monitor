@@ -55,10 +55,13 @@ class PriceCache:
     def set(self, sku: str, price: float):
         with self._lock:
             self._data[sku] = price
-            CACHE_FILE.write_text(
+            # 原子写入：先写临时文件再 rename，避免进程被强杀时缓存损坏
+            tmp = CACHE_FILE.with_suffix(".tmp")
+            tmp.write_text(
                 json.dumps(self._data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            tmp.replace(CACHE_FILE)
 
 
 # ── HTTP Session（trust_env=False 彻底屏蔽系统/VPN代理）──────
@@ -131,7 +134,9 @@ class JDPriceFetcher:
                     raw_id = item.get("id", "").replace("J_", "")
                     raw_p  = item.get("p") or item.get("op")
                     if raw_id and raw_p:
-                        result[raw_id] = float(raw_p)
+                        val = float(raw_p)
+                        if val > 0:   # 0元为无效价格（如商品下架），跳过
+                            result[raw_id] = val
             except Exception as e:
                 log.warning("p.3.cn 解析失败: %s", e)
         return result
@@ -155,7 +160,9 @@ class JDPriceFetcher:
                     if isinstance(obj, dict):
                         obj = obj.get(k)
                 if obj and str(obj).replace(".", "").isdigit():
-                    return float(obj)
+                    val = float(obj)
+                    if val > 0:       # 0元为无效价格，跳过
+                        return val
         except Exception as e:
             log.debug("item-soa 失败 SKU=%s: %s", sku, e)
         return None
@@ -706,6 +713,9 @@ def job_check_prices():
             # 批量查询本项目所有 SKU（每批20个，大幅减少 API 调用次数）
             all_skus     = [item["sku"] for item in sku_list]
             sku_to_name  = {item["sku"]: item["name"] for item in sku_list}
+            if not all_skus:
+                log.info("[%s] 无合作SKU，跳过", proj_name)
+                continue
             prices       = jd.get_prices_batch(all_skus)
             log.info("[%s] 查询 %d 个 SKU，成功返回 %d 个",
                      proj_name, len(all_skus), len(prices))

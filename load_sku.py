@@ -17,6 +17,20 @@ import xlrd
 # Excel 文件默认在代码目录的上一级（桌面）
 _DEFAULT_XLS = Path(__file__).parent.parent / "sku.xls"
 
+
+def _clean_sku(raw) -> str:
+    """
+    将 xlrd 读取的 SKU 原始值转为干净字符串。
+    xlrd 将纯数字单元格读为 float（如 100012345.0），
+    直接 str() 会得到 "100012345.0"，导致京东 API 查询失败。
+    使用 int(float()) 安全截断小数部分。
+    """
+    s = str(raw).strip()
+    try:
+        return str(int(float(s)))
+    except (ValueError, OverflowError):
+        return s
+
 # Sheet1 各品牌列位置（行0=品牌名，行1=表头，行2起=数据）
 _BRAND_COLS = {
     "海信":   {"model": 1,    "sku": 2,  "flag": 3},
@@ -47,7 +61,7 @@ def load_sku_from_excel(xls_path=None) -> dict[str, list[dict]]:
     try:
         sh_time = wb.sheet_by_name("合作时间")
         for r in range(2, sh_time.nrows):          # 行0=品牌名，行1=表头
-            sku_raw = str(sh_time.cell_value(r, 2)).replace(".0", "").strip()
+            sku_raw = _clean_sku(sh_time.cell_value(r, 2))
             model   = str(sh_time.cell_value(r, 1)).strip()
             if sku_raw and sku_raw not in ("/", "nan", "") and model:
                 sku_to_model[sku_raw] = model
@@ -71,7 +85,7 @@ def load_sku_from_excel(xls_path=None) -> dict[str, list[dict]]:
         for r in range(2, sh1.nrows):
             try:
                 flag    = str(sh1.cell_value(r, ci_flag)).strip()
-                sku_raw = str(sh1.cell_value(r, ci_sku)).replace(".0", "").strip()
+                sku_raw = _clean_sku(sh1.cell_value(r, ci_sku))
             except IndexError:
                 continue
 
@@ -110,5 +124,6 @@ def merge_projects_with_excel(projects: list, xls_path=None) -> list:
         if excel_skus is not None:
             merged.append({**p, "skus": excel_skus})
         else:
+            print(f"⚠️ [SKU表格] 品牌「{p['name']}」不在 Excel 映射中，回退到 projects.json 原有配置")
             merged.append(p)  # 该品牌不在 Excel 中，保留原 skus
     return merged

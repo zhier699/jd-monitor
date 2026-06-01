@@ -73,6 +73,12 @@ for project in cfg.PROJECTS:
     # 批量查询本项目所有 SKU（每 20 个一批，不走备用接口——5分钟后还有机会）
     all_skus    = [item["sku"] for item in sku_list]
     sku_to_name = {item["sku"]: item["name"] for item in sku_list}
+
+    # 无合作SKU时直接跳过，避免触发虚假的价格获取失败通知
+    if not all_skus:
+        print(f"[{proj_name}] 无合作SKU，跳过")
+        continue
+
     prices      = jd.get_prices_batch(all_skus, backup=False)
 
     hit = len(prices)
@@ -103,14 +109,16 @@ for project in cfg.PROJECTS:
         else:
             print(f"  [不变] {name} = {new_price:.2f} 元")
 
-# 有品牌全部失败 → 向所有不重复 Webhook 发一条聚合异常通知
+# 有品牌全部失败 → 只向失败品牌对应的 Webhook 发聚合异常通知（精准路由，不打扰无关群）
 if failed_projects:
+    failed_names = {p["name"] for p in failed_projects}
     seen_wh: set[str] = set()
     for project in cfg.PROJECTS:
-        wh = project["webhook"]
-        if wh not in seen_wh:
-            seen_wh.add(wh)
-            bot.notify_price_fetch_failed(wh, failed_projects)
+        if project["name"] in failed_names:
+            wh = project["webhook"]
+            if wh not in seen_wh:
+                seen_wh.add(wh)
+                bot.notify_price_fetch_failed(wh, failed_projects)
     print(f"⚠️ 已发送价格获取异常通知（{len(failed_projects)} 个品牌全部失败）")
 
 print("价格检测完成")

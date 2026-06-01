@@ -55,6 +55,10 @@ cfg.PROJECTS = merge_projects_with_excel(cfg.PROJECTS)
 # 日报 Webhook 根据更新后的品牌列表重新去重
 cfg.DAILY_REPORT_WEBHOOKS = list(dict.fromkeys(p["webhook"] for p in cfg.PROJECTS))
 
+if not cfg.DAILY_REPORT_WEBHOOKS:
+    print("❌ 无有效 Webhook，无法发送日报（请检查 projects.json 或 sku.xls 配置）")
+    sys.exit(1)
+
 bot     = FeishuBot()
 fetcher = JDActivityFetcher()
 
