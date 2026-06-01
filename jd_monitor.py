@@ -98,9 +98,15 @@ class JDPriceFetcher:
     ITEM_URL    = "https://item.jd.com/{sku}.html"
     BATCH_SIZE  = 20
 
-    def get_prices_batch(self, skus: list[str]) -> dict[str, float]:
-        """批量查询价格：先尝试主接口，失败则逐个走备用接口"""
+    def get_prices_batch(self, skus: list[str], backup: bool = True) -> dict[str, float]:
+        """
+        批量查询价格。
+        backup=True （默认）：主接口失败的 SKU 逐个走 SOA/页面备用接口
+        backup=False：仅用主接口，失败直接跳过（价格检测模式，避免超时）
+        """
         result = self._batch_p3cn(skus)
+        if not backup:
+            return result
         # 对主接口未返回的 SKU 逐个走备用
         missing = [s for s in skus if s not in result]
         if missing:
@@ -251,7 +257,7 @@ class JDActivityFetcher:
                 found = {
                     "brand": brand,
                     "name":  first.get("name", ""),
-                    "sku":   "",   # 清空 SKU，避免在消息里显示商品页链接
+                    "sku":   first.get("sku", ""),   # 保留SKU，日报仍显示商品直达链接
                     "rules": ["国家补贴活动进行中"] if activity.get("url") else [],
                 }
                 log.info("[%s] 未能获取具体国补描述，使用兜底文案", brand)
@@ -265,32 +271,66 @@ class JDActivityFetcher:
 
     # ── Step1：提取平台级国补活动URL ──────────────────────
     def _get_platform_activity(self, projects: list) -> dict:
-        """从商品页面 HTML 中提取国补活动 URL，并与昨日缓存对比"""
+        """
+        从商品页面 HTML 中提取国补活动 URL，并与昨日缓存对比。
+        策略：对所有候选 URL 计算与"以旧换新/国补"关键词的最短距离，
+        距离最近的才是真正的国补入口；若全部距离过远则回退到第一个 URL。
+        """
         url = ""
         changed = False
         try:
             if not projects or not projects[0].get("skus"):
                 log.warning("_get_platform_activity: projects 为空，跳过")
                 return {"url": "", "changed": False}
-            sku = projects[0]["skus"][0]["sku"]
-            resp = http_get(
-                self.ITEM_URL.format(sku=sku),
-                extra_headers={"Accept": "text/html,application/xhtml+xml"},
-                timeout=15,
-            )
+
+            # 遍历前3个品牌的第1个 SKU，找到能返回含国补活动URL页面的为止
+            resp = None
+            for project in projects[:3]:
+                if not project.get("skus"):
+                    continue
+                sku = project["skus"][0]["sku"]
+                resp = http_get(
+                    self.ITEM_URL.format(sku=sku),
+                    extra_headers={"Accept": "text/html,application/xhtml+xml"},
+                    timeout=15,
+                )
+                if resp and resp.text:
+                    break
+
             if resp:
                 html = resp.text
-                # 找所有 pro.jd.com/mall/active/... 链接
-                urls = list(dict.fromkeys(re.findall(
+                # 收集所有候选活动 URL（去重保序）
+                url_iter = re.finditer(
                     r'https://pro\.jd\.com/mall/active/\w+/index\.html', html
-                )))
-                # 优先取 aria-lable="国家补贴" 对应的链接
-                guobao = re.findall(
-                    r'(https://pro\.jd\.com/mall/active/\w+/index\.html)'
-                    r'[^>]*aria-la[b]le=\"国家补贴\"',
-                    html,
                 )
-                url = guobao[0] if guobao else (urls[0] if urls else "")
+                url_matches = list(dict.fromkeys(m.group(0) for m in url_iter))
+
+                if url_matches:
+                    # 收集"以旧换新/国补"关键词的所有出现位置
+                    kw_positions: list[int] = []
+                    for kw in ["以旧换新", "国补", "国家补贴", "旧换新"]:
+                        for km in re.finditer(re.escape(kw), html):
+                            kw_positions.append(km.start())
+
+                    if kw_positions:
+                        # 对每个候选 URL，找它在 HTML 中的位置，计算与最近关键词的距离
+                        best_url, best_dist = "", float("inf")
+                        for candidate in url_matches:
+                            for pos_m in re.finditer(re.escape(candidate), html):
+                                url_pos = pos_m.start()
+                                dist = min(abs(url_pos - kp) for kp in kw_positions)
+                                if dist < best_dist:
+                                    best_dist = dist
+                                    best_url = candidate
+                        # 距离 ≤ 5000 字符认为相关；否则关键词与链接太远，回退第一个
+                        url = best_url if best_dist <= 5000 else url_matches[0]
+                        if best_dist > 5000:
+                            log.warning("国补关键词与所有活动URL距离过远(最近 %d 字符)，"
+                                        "回退到页面第一个活动URL", int(best_dist))
+                    else:
+                        # 页面没有"以旧换新/国补"关键词，直接取第一个
+                        url = url_matches[0]
+
                 log.info("平台国补活动URL: %s", url)
 
                 # 与缓存对比（仅在成功拿到 URL 时才更新缓存，避免请求失败时覆盖历史记录）
@@ -470,7 +510,11 @@ class FeishuBot:
 
     def _send(self, webhook: str, text: str) -> bool:
         body = {"msg_type": "text", "content": {"text": text}}
-        for attempt in range(1, config.RETRY_TIMES + 1):
+        # NOTIFY_RETRY 与 JD API 的 RETRY_TIMES 独立：
+        # 价格检测把 RETRY_TIMES 降为 1 以快速失败，但飞书通知必须至少重试 3 次
+        # 否则价格变动检测到但通知失败时，缓存已更新，下轮不再触发，消息永久丢失
+        retry = getattr(config, "NOTIFY_RETRY", config.RETRY_TIMES)
+        for attempt in range(1, retry + 1):
             try:
                 resp = _session.post(webhook, json=body, timeout=10)
                 data = resp.json()
@@ -480,9 +524,29 @@ class FeishuBot:
             except Exception as e:
                 log.warning("飞书发送失败（第 %d 次）: %s", attempt, e)
             # 无论是非零返回码还是异常，重试前都等待，避免加速触发限流
-            if attempt < config.RETRY_TIMES:
+            if attempt < retry:
                 time.sleep(3)
         return False
+
+    # ── 价格获取异常通知 ──────────────────────────────────
+    def notify_price_fetch_failed(self, webhook: str, failed_list: list[dict]):
+        """
+        failed_list: [{"name": 品牌名, "total": SKU总数}, ...]
+        仅在某品牌本轮 0 个 SKU 成功返回价格时调用
+        """
+        lines = "\n".join(
+            f"  • {p['name']}：0 / {p['total']} 个SKU 全部失败"
+            for p in failed_list
+        )
+        msg = (
+            f"⚠️ 【价格获取异常】\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"❌ 本轮以下品牌价格全部无法获取：\n"
+            f"{lines}\n"
+            f"🔍 可能原因：网络异常 / 京东API变化，请检查后重启监控\n"
+            f"⏰ 时间：{_now_bj().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        self._send(webhook, msg)
 
     # ── 降价通知 ──────────────────────────────────────────
     def notify_price_down(self, webhook: str, project: str, owner: str,

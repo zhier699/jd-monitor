@@ -47,7 +47,13 @@ cfg.REQUEST_HEADERS       = {
 }
 sys.modules["config"] = cfg
 
+from load_sku import merge_projects_with_excel
 from jd_monitor import JDActivityFetcher, FeishuBot
+
+# 用桌面 sku.xls 覆盖 projects.json 里的 skus（找不到则回退原配置）
+cfg.PROJECTS = merge_projects_with_excel(cfg.PROJECTS)
+# 日报 Webhook 根据更新后的品牌列表重新去重
+cfg.DAILY_REPORT_WEBHOOKS = list(dict.fromkeys(p["webhook"] for p in cfg.PROJECTS))
 
 bot     = FeishuBot()
 fetcher = JDActivityFetcher()
