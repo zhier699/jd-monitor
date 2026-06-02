@@ -7,6 +7,7 @@
 import datetime as _datetime_mod
 import json
 import logging
+import logging.handlers
 import re
 import threading
 import time
@@ -30,7 +31,10 @@ def _now_bj() -> datetime:
 log = logging.getLogger(__name__)
 if not log.handlers:
     _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    _fh  = logging.FileHandler("monitor.log", encoding="utf-8")
+    # 日志轮转：超过 5MB 自动切割，最多保留 3 个旧文件，防止无限增长
+    _fh  = logging.handlers.RotatingFileHandler(
+        "monitor.log", maxBytes=5*1024*1024, backupCount=3, encoding="utf-8"
+    )
     _fh.setFormatter(_fmt)
     log.addHandler(_fh)
     log.setLevel(logging.INFO)
