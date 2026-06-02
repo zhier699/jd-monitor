@@ -25,15 +25,16 @@ def _now_bj() -> datetime:
     return datetime.now(_TZ_BJ)
 
 # ── 日志 ────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("monitor.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
+# 注意：不用 basicConfig，避免被 run_*.py 的 basicConfig 覆盖导致 FileHandler 失效
+# 直接给本模块的 logger 添加 handler，保证 monitor.log 在所有调用方式下都能写入
 log = logging.getLogger(__name__)
+if not log.handlers:
+    _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    _fh  = logging.FileHandler("monitor.log", encoding="utf-8")
+    _fh.setFormatter(_fmt)
+    log.addHandler(_fh)
+    log.setLevel(logging.INFO)
+    log.propagate = True   # 同时输出到 root logger（面板日志窗口 / 命令行）
 
 # ── 价格缓存（JSON 文件持久化，重启不丢失）──────────────────
 CACHE_FILE = Path("price_cache.json")
@@ -286,7 +287,7 @@ class JDActivityFetcher:
         url = ""
         changed = False
         try:
-            if not projects or not projects[0].get("skus"):
+            if not projects:
                 log.warning("_get_platform_activity: projects 为空，跳过")
                 return {"url": "", "changed": False}
 
